@@ -1,0 +1,462 @@
+#!/usr/bin/env python3
+"""Zerlegt die extrahierten Gesetzestexte (pdftotext) in einzelne Normen und schreibt corpus.json.
+
+Aufruf: python3 -I build_corpus.py <txt-Verzeichnis> <Ausgabe.json>
+"""
+import json
+import re
+import sys
+
+TXT_DIR, OUT = sys.argv[1], sys.argv[2]
+
+LAWS = [
+    dict(id="BayEUG", file="BayEUG.txt", style="art_dot", unit="Art.",
+         name="Bayerisches Gesetz über das Erziehungs- und Unterrichtswesen",
+         stand="zuletzt geändert durch §§ 1 und 2 des Gesetzes vom 28. Juli 2026 (GVBl. S. 379)",
+         url="https://www.gesetze-bayern.de/Content/Document/BayEUG", first_max=2),
+    dict(id="BaySchO", file="BaySchO.txt", style="par", unit="§",
+         name="Bayerische Schulordnung (schulartübergreifende Regelungen)",
+         stand="zuletzt geändert durch § 1 der Verordnung vom 1. Juli 2026 (GVBl. S. 425)",
+         url="https://www.gesetze-bayern.de/Content/Document/BaySchO2016", first_max=2),
+    dict(id="GSO", file="BayGSO.txt", style="par", unit="§",
+         name="Gymnasialschulordnung",
+         stand="zuletzt geändert durch § 11 der Verordnung vom 1. Juli 2026 (GVBl. S. 425)",
+         url="https://www.gesetze-bayern.de/Content/Document/BayGSO", first_max=2),
+    dict(id="BayBG", file="BayBG.txt", style="art_dot", unit="Art.",
+         name="Bayerisches Beamtengesetz",
+         stand="zuletzt geändert durch § 44 des Gesetzes vom 26. März 2026 (GVBl. S. 75)",
+         url="https://www.gesetze-bayern.de/Content/Document/BayBG", first_max=2),
+    dict(id="BayDG", file="BayDG.txt", style="art_dot", unit="Art.",
+         name="Bayerisches Disziplinargesetz",
+         stand="zuletzt geändert durch § 72 des Gesetzes vom 26. März 2026 (GVBl. S. 75)",
+         url="https://www.gesetze-bayern.de/Content/Document/BayDG", first_max=2),
+    dict(id="UrlMV", file="BayUrlMV.txt", style="par", unit="§",
+         name="Bayerische Urlaubs- und Mutterschutzverordnung (Urlaub, Mutterschutz und Elternzeit der bayerischen Beamten)",
+         stand="zuletzt geändert durch § 2 der Verordnung vom 21. Oktober 2025 (GVBl. S. 559) und durch Verordnung vom 21. Oktober 2025 (GVBl. S. 561)",
+         url="https://www.gesetze-bayern.de/Content/Document/BayUrlMV", first_max=2),
+    dict(id="BayDSG", file="BayDSG.txt", style="art_dot", unit="Art.",
+         name="Bayerisches Datenschutzgesetz",
+         stand="zuletzt geändert durch § 2 des Gesetzes vom 25. Juli 2025 (GVBl. S. 254)",
+         url="https://www.gesetze-bayern.de/Content/Document/BayDSG", first_max=2,
+         cut=r"\nMünchen, den 15\. Mai 2018.*$"),
+    dict(id="DSGVO", file="DSGVO.txt", style="dsgvo", unit="Art.",
+         name="Datenschutz-Grundverordnung (Verordnung (EU) 2016/679)",
+         stand="Fassung des Amtsblatts L 119 vom 4. Mai 2016, ohne spätere Berichtigungen",
+         url="https://eur-lex.europa.eu/legal-content/DE/TXT/?uri=CELEX:32016R0679", first_max=2),
+    dict(id="Hausordnung", file="Hausordnung.txt", style="haus", unit="Nr.",
+         name="Hausordnung der Schule (Regelung der Schulleitung nach § 2 Abs. 2 Nr. 2 BaySchO)",
+         stand="Schuljahr 2026/27, unterzeichnet vom Schulleiter Matthias Zeidler",
+         url="", first_max=2),
+    dict(id="LDO", file="BayVwV.txt", style="par", unit="§",
+         name="Lehrerdienstordnung (Dienstordnung für Lehrkräfte an staatlichen Schulen in Bayern), Bekanntmachung des Staatsministeriums, Verwaltungsvorschrift",
+         stand="Bekanntmachung vom 5. Juli 2014 (KWMBl. S. 112), zuletzt geändert durch Bekanntmachung vom 6. März 2025 (BayMBl. Nr. 124)",
+         url="", first_max=2, start_marker="I. Abschnitt Allgemeines", cut=r"\nDr\. Ludwig Spaenle.*$"),
+    dict(id="BeamtStG", file="BeamtStG.txt", style="par", unit="§",
+         name="Beamtenstatusgesetz (Statusrecht der Beamtinnen und Beamten in den Ländern)",
+         stand="Fassung vom 17. Juni 2008 (BGBl. I S. 1010), zuletzt geändert durch Art. 5 des Gesetzes vom 20. Dezember 2023 (BGBl. 2023 I Nr. 389)",
+         url="https://www.gesetze-im-internet.de/beamtstg/", first_max=2, start_marker="Abschnitt 1", joinnum=True),
+    dict(id="GG", file="GG.txt", style="gg", unit="Art.",
+         name="Grundgesetz für die Bundesrepublik Deutschland",
+         stand="zuletzt geändert durch Art. 1 des Gesetzes vom 22. März 2025 (BGBl. 2025 I Nr. 94)",
+         url="https://www.gesetze-im-internet.de/gg/", first_max=2, joinnum=True),
+    dict(id="KunstUrhG", file="KunstUrhG.txt", style="kunst", unit="§",
+         name="Gesetz betreffend das Urheberrecht an Werken der bildenden Künste und der Photographie (Recht am eigenen Bild, §§ 22 ff.)",
+         stand="zuletzt geändert durch Art. 3 § 31 des Gesetzes vom 16. Februar 2001 (BGBl. I S. 266); aufgehoben, soweit es nicht den Schutz von Bildnissen betrifft",
+         url="https://www.gesetze-im-internet.de/kunsturhg/", first_max=30, joinnum=True),
+]
+
+HEAD = {
+    "art_dot": re.compile(r"^Art\. (\d+)([a-z]?)\s+(\S.*)$"),
+    "par": re.compile(r"^§ (\d+)([a-z]?)\s+(\S.*)$"),
+    "gg": re.compile(r"^Art (\d+)([a-z]?)(?: (\((?:weggefallen|aufgehoben)\)))?$"),
+    "kunst": re.compile(r"^§ (\d+)([a-z]?)$"),
+}
+BAD_TITLE = re.compile(r"^(Abs\.|Satz|Nr\.|Absatz|Halbsatz|Buchst\.|Alt\.|bis\b|und\b|oder\b|in\b|im\b|des\b|der\b|die\b|das\b|bleibt\b|sowie\b)")
+ANLAGE = re.compile(r"^Anlage (\d+[a-z]?)(?: (\(.*\)))?$")
+STRUCT = [
+    (1, re.compile(r"^[IVX]+\. Abschnitt\b.*$")),
+    (2, re.compile(r"^\d\. Teil\b.*$")),
+    (0, re.compile(r"^((Erster|Zweiter|Dritter|Vierter|Fünfter|Sechster|Siebter|Achter|Neunter|Zehnter|Elfter|Zwölfter) Teil|Teil \d+)\b.*$")),
+    (1, re.compile(r"^Abschnitt (\d+|[IVXLC]+)\b.*$")),
+    (2, re.compile(r"^(Kapitel|Unterabschnitt) \d+\b.*$")),
+]
+STRUCT_ANY = re.compile(r"^(((Erster|Zweiter|Dritter|Vierter|Fünfter|Sechster|Siebter|Achter|Neunter|Zehnter|Elfter|Zwölfter) Teil|Teil \d+|Abschnitt (\d+|[IVXLC]+)|Kapitel \d+|Unterabschnitt \d+)\b.*|\(vergleiche.*)$")
+CONT_END = re.compile(r"(,|\b(und|oder|sowie|bzw\.|für|von|im|der|des|zur|zum|auf|an|bei|nach))$")
+HEAD_ANY = re.compile(r"^(Art\.|Art|§) \d+[a-z]?\b")
+NUMERIC_ROW = re.compile(r"^[\d\s.,/–\-+*()%:]+$")
+
+
+def clean_lines(text, style):
+    out = []
+    for ln in text.replace("\f", "\n").split("\n"):
+        s = ln.rstrip()
+        st = s.strip()
+        if re.fullmatch(r"- Seite \d+ von \d+ -", st):
+            continue
+        if st.startswith("Ein Service des Bundesministerium") or st.startswith("sowie des Bundesamts für Justiz") or "gesetze-im-internet.de" in st:
+            continue
+        if style == "kunst":
+            s = re.sub(r"§§ \d+ bis \d+ -+\s*(- Seite \d+ von \d+ -)?", "", s).rstrip()
+            if s.strip() == "-":
+                continue
+        out.append(s)
+    return out
+
+
+def key_of(num, suf):
+    return int(num) * 100 + (ord(suf) - 96 if suf else 0)
+
+
+def collapse_table(lines):
+    """Tabellen aus pdftotext stehen Zelle für Zelle in eigenen Zeilen: Zahlenzeilen an die Zeile davor hängen."""
+    rows = []
+    for ln in lines:
+        st = ln.strip()
+        if not st:
+            continue
+        if rows and NUMERIC_ROW.match(st) and len(st) < 12:
+            rows[-1] += " | " + st
+        else:
+            rows.append(st)
+    return "\n".join(rows)
+
+
+def mk(law, ref, num, title, ctx, kind, text):
+    return dict(law=law["id"], ref=ref, num=num, suf="", title=title, ctx=ctx, kind=kind,
+                text=text.strip(), aufgehoben=False)
+
+
+def parse_dsgvo(law):
+    raw = open(f"{TXT_DIR}/{law['file']}", encoding="utf-8").read()
+    raw = raw.replace("­\n", "").replace("­", "").replace("\f", "\n")
+    foot = re.compile(r"^\(\d{1,2}\)\s+(Richtlinie|Verordnung|Beschluss|Empfehlung|Rahmenbeschluss|Urteil|Stellungnahme|Standpunkt|Entscheidung|Mitteilung|Durchführungsbeschluss|Delegierte|Gesetz|Abl\.|ABl\.|Vgl\.|Siehe)\b")
+    lines = []
+    for ln in raw.split("\n"):
+        st = ln.strip()
+        if re.fullmatch(r"L 119/\d+|DE|Amtsblatt der Europäischen Union|4\.5\.2016", st):
+            continue
+        if foot.match(st):
+            continue
+        lines.append(ln.rstrip())
+    start_e = next(i for i, l in enumerate(lines) if l.strip().startswith("in Erwägung nachstehender Gründe"))
+    start_a = next(i for i, l in enumerate(lines) if re.match(r"^HAB?EN? FOLGENDE VERORDNUNG ERLASSEN", l.strip()))
+    norms = []
+
+    def tidy(text):
+        text = re.sub(r"^\((\d+)\)[ \t]*\n+", r"(\1) ", text, flags=re.M)
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        return text.strip()
+
+    # Erwägungsgründe
+    cur_n, buf = None, []
+    for l in lines[start_e + 1:start_a]:
+        m = re.match(r"^\((\d+)\)\s*(.*)$", l.strip())
+        if m and int(m.group(1)) == (cur_n or 0) + 1 and not re.match(r"^[a-z]\)", m.group(2)):
+            if cur_n is not None:
+                norms.append(mk(law, f"ErwG {cur_n}", cur_n, "", "Erwägungsgründe", "erwg", "\n".join(buf)))
+            cur_n, buf = int(m.group(1)), ([m.group(2)] if m.group(2) else [])
+        elif cur_n is not None:
+            buf.append(l)
+    if cur_n is not None:
+        norms.append(mk(law, f"ErwG {cur_n}", cur_n, "", "Erwägungsgründe", "erwg", "\n".join(buf)))
+    for x in norms:
+        x["text"] = re.sub(r"\n{2,}", "\n", x["text"]).strip()
+
+    # Artikel
+    ctx = ["", ""]
+    cur, buf = None, []
+
+    def flush():
+        nonlocal cur, buf
+        if cur is not None:
+            cur["text"] = tidy("\n".join(buf))
+            norms.append(cur)
+        cur, buf = None, []
+
+    i, body = 0, lines[start_a + 1:]
+    n = len(body)
+
+    def nxt(j):
+        while j < n and not body[j].strip():
+            j += 1
+        return j
+
+    while i < n:
+        s = body[i].strip()
+        if s.startswith("Geschehen zu Brüssel"):
+            break
+        m = re.fullmatch(r"KAPITEL ([IVXL]+)", s)
+        if m:
+            flush(); j = nxt(i + 1)
+            ctx = [f"Kapitel {m.group(1)} {body[j].strip()}", ""]
+            i = j + 1; continue
+        m = re.fullmatch(r"Abschnitt (\d+)", s)
+        if m:
+            flush(); j = nxt(i + 1)
+            ctx[1] = f"Abschnitt {m.group(1)} {body[j].strip()}"
+            i = j + 1; continue
+        m = re.fullmatch(r"Artikel (\d+)", s)
+        if m:
+            flush(); j = nxt(i + 1)
+            cur = mk(law, f"Art. {m.group(1)}", int(m.group(1)), body[j].strip(), " › ".join(c for c in ctx if c), "norm", "")
+            i = j + 1; continue
+        if cur is not None:
+            buf.append(body[i])
+        i += 1
+    flush()
+    return norms
+
+
+HAUS_SECTIONS = {"1": "Unterrichtsbetrieb", "2": "Sauberkeit und Ordnung", "3": "Sicherheit",
+                 "4": "Umgangsformen", "5": "Umgang mit digitalen Medien"}
+
+
+def parse_haus(law):
+    raw = open(f"{TXT_DIR}/{law['file']}", encoding="utf-8").read().replace("\f", "\n")
+    lines = [l.rstrip() for l in raw.split("\n")
+             if not l.startswith("Pirckheimer-Gymnasium Nürnberg |") and not l.startswith("www.pirckheimer")]
+    norms = []
+    a = next(i for i, l in enumerate(lines) if l.strip() == "PRÄAMBEL")
+    b = next(i for i, l in enumerate(lines) if l.strip() == "AUSFÜHRUNGEN")
+    pre = " ".join(l.strip() for l in lines[a + 1:b] if l.strip())
+    norms.append(mk(law, "Präambel", None, "Präambel", "Hausordnung", "norm", pre))
+    cur, buf = None, []
+
+    def flush():
+        nonlocal cur, buf
+        if cur is not None:
+            cur["text"] = "\n".join(x for x in buf if x.strip()).strip()
+            if cur["text"]:
+                norms.append(cur)
+        cur, buf = None, []
+
+    for l in lines[b + 1:]:
+        s = l.strip()
+        if s == "Matthias Zeidler":
+            break
+        if re.fullmatch(r"\d", s):          # Abschnittsnummer oder Seitenzahl
+            continue
+        if s in HAUS_SECTIONS.values():
+            if s in ("Umgangsformen", "Umgang mit digitalen Medien"):
+                flush()
+                num = [k for k, v in HAUS_SECTIONS.items() if v == s][0]
+                cur = mk(law, f"Nr. {num}", None, s, f"Hausordnung › {num} {s}", "norm", "")
+            continue
+        m = re.fullmatch(r"(\d)\.(\d+)", s)
+        if m:
+            flush()
+            sec = HAUS_SECTIONS[m.group(1)]
+            cur = mk(law, f"Nr. {m.group(1)}.{m.group(2)}", None, sec, f"Hausordnung › {m.group(1)} {sec}", "norm", "")
+            continue
+        if cur is not None:
+            buf.append(s)
+    flush()
+    return norms
+
+
+def parse(law):
+    if law["style"] == "dsgvo":
+        return parse_dsgvo(law)
+    if law["style"] == "haus":
+        return parse_haus(law)
+    raw = open(f"{TXT_DIR}/{law['file']}", encoding="utf-8").read()
+    if law.get("cut"):
+        raw = re.sub(law["cut"], "", raw, flags=re.S)
+    lines = clean_lines(raw, law["style"])
+    if law.get("start_marker"):
+        idx = [k for k, l in enumerate(lines) if l.strip() == law["start_marker"]]
+        if idx:
+            lines = lines[idx[-1]:]
+    head_re = HEAD[law["style"]]
+    norms = []
+    ctx = ["", "", ""]
+    cur = None
+    last_key, last_num = 0, 0
+    in_anlagen = False
+    i, n = 0, len(lines)
+
+    def ctx_str():
+        return " › ".join(c for c in ctx if c)
+
+    def flush():
+        nonlocal cur
+        if cur is not None:
+            body = cur["lines"]
+            if cur["kind"] == "anlage":
+                cur["text"] = collapse_table(body)
+            else:
+                text = "\n".join(body).strip()
+                text = re.sub(r"\n{3,}", "\n\n", text)
+                cur["text"] = text
+            del cur["lines"]
+            norms.append(cur)
+        cur = None
+
+    def next_nonempty(j):
+        while j < n and not lines[j].strip():
+            j += 1
+        return j
+
+    struct_end = -1
+
+    def prev_line_ok(j):
+        """Eine echte Überschrift folgt auf eine Leerzeile, eine Gliederungszeile oder einen abgeschlossenen Satz,
+        ein Verweis wie 'Art. 28 DSGVO ist ...' mitten im Satz nicht."""
+        k = j - 1
+        if k < 0 or not lines[k].strip() or k == struct_end:
+            return True
+        prev = lines[k].strip()
+        return prev[-1] in ".:;)" or bool(STRUCT_ANY.match(prev)) or bool(HEAD_ANY.match(prev))
+
+    def next_line_ok(j):
+        """Auf eine Überschrift folgt Normtext, der mit '(', Ziffer oder Großbuchstabe beginnt."""
+        k = next_nonempty(j + 1)
+        if k >= n:
+            return True
+        nxt = lines[k].strip()
+        c = nxt[:1]
+        return (c.isdigit() or c.isupper() or c in "(–-„\"§" or bool(ANLAGE.match(nxt))
+                or bool(re.match(r"^[a-z]\)", nxt)))
+
+    while i < n:
+        s = lines[i].strip()
+
+        # GG: römische Gliederung "I." + Titelzeile
+        if law["style"] == "gg" and re.fullmatch(r"[IVX]+[a-z]?\.", s):
+            j = next_nonempty(i + 1)
+            if j < n and len(lines[j].strip()) < 90:
+                flush()
+                ctx[0] = f"{s} {lines[j].strip()}"
+                struct_end = j
+                i = j + 1
+                continue
+
+        # Gliederungsebenen
+        matched_struct = False
+        if law["style"] in ("art_dot", "par") and len(s) < 100 and not s.endswith(".") and not in_anlagen:
+            for rank, rx in STRUCT:
+                if rx.match(s):
+                    flush()
+                    ctx[rank] = s
+                    for r in range(rank + 1, 3):
+                        ctx[r] = ""
+                    j = next_nonempty(i + 1)
+                    if j < n and lines[j].strip().startswith("(vergleiche"):
+                        ctx[rank] += " " + lines[j].strip()
+                        i = j
+                    if re.fullmatch(r"(Abschnitt|Kapitel|Unterabschnitt|Teil) \d+", s):
+                        j = next_nonempty(i + 1)
+                        cand = lines[j].strip() if j < n else ""
+                        if cand and len(cand) < 80 and not cand.startswith(("§", "Art", "(")) and not re.match(r"^\d", cand):
+                            ctx[rank] += " " + cand
+                            i = j
+                    struct_end = i
+                    matched_struct = True
+                    break
+        if matched_struct:
+            i += 1
+            continue
+
+        # Anlagen
+        m = ANLAGE.match(s)
+        if m and law["style"] in ("par", "art_dot"):
+            flush()
+            in_anlagen = True
+            ref = f"Anlage {m.group(1)}" + (f" {m.group(2)}" if m.group(2) else "")
+            title = ""
+            j = next_nonempty(i + 1)
+            if j < n and len(lines[j].strip()) < 110 and not NUMERIC_ROW.match(lines[j].strip()):
+                title = lines[j].strip()
+                i = j
+            cur = dict(law=law["id"], ref=ref, num=None, title=title, ctx="Anlagen", kind="anlage", lines=[])
+            i += 1
+            continue
+
+        # Normüberschriften
+        if not in_anlagen:
+            m = head_re.match(s)
+            if m:
+                num, suf = m.group(1), m.group(2)
+                title = m.group(3).strip() if m.lastindex and m.lastindex >= 3 and m.group(3) else ""
+                cont = 0
+                if title and CONT_END.search(title):
+                    j2 = next_nonempty(i + 1)
+                    if j2 < n and len(lines[j2].strip()) < 125 and not HEAD_ANY.match(lines[j2].strip()):
+                        title = title + " " + lines[j2].strip()
+                        cont = j2 - i
+                k = key_of(num, suf)
+                gap = int(num) - last_num
+                ok = (k > last_key and (next_line_ok(i + cont) or title.startswith("(aufgehoben"))
+                      and (gap <= 3 or (gap <= 60 and prev_line_ok(i))))
+                if last_key == 0:
+                    ok = int(num) <= law["first_max"]
+                if ok and title:
+                    ok = (title[0].isupper() or title[0] == "(") and not BAD_TITLE.match(title) and len(title) < 200
+                    if ok and title.endswith(".") and not title.endswith(")."):
+                        ok = False
+                    if ok and title.count(")") > title.count("("):
+                        ok = False
+                if ok:
+                    flush()
+                    last_key, last_num = k, int(num)
+                    cur = dict(law=law["id"], ref=f"{law['unit']} {num}{suf}", num=int(num), suf=suf,
+                               title=title, ctx=ctx_str(), kind="norm", lines=[])
+                    i += 1 + cont
+                    continue
+
+        # GG: Text nach Art. 146 abschneiden
+        if law["style"] == "gg" and cur and cur["ref"] == "Art. 146" and re.match(r"^(Schlußformel|Anhang|Schlussformel)", s):
+            flush()
+            break
+
+        if cur is not None:
+            cur["lines"].append(lines[i])
+        i += 1
+    flush()
+
+    for nm in norms:
+        if law.get("joinnum"):
+            nm["text"] = re.sub(r"^(\d+\.|[a-z]\))[ \t]*\n+(?=\S)", r"\1 ", nm["text"], flags=re.M)
+        t = nm["text"].strip()
+        nm["aufgehoben"] = bool(
+            re.fullmatch(r"\(?(aufgehoben|weggefallen|nicht mehr belegt)\)?\.?", nm["title"].strip(), re.I)
+            or re.fullmatch(r"\(?(aufgehoben|weggefallen)\)?\.?", t, re.I)
+            or (nm["kind"] == "anlage" and "nicht mehr belegt" in nm["ref"])
+        )
+        if nm["title"] == "" and law["style"] in ("gg",):
+            nm["title"] = ""
+    # leere Normen (KunstUrhG: aufgehobene Paragraphen ohne Text) verwerfen
+    norms = [x for x in norms if x["text"].strip() or x["title"]]
+    if law["style"] == "kunst":
+        norms = [x for x in norms if x["text"].strip()]
+    return norms
+
+
+corpus = {"laws": [], "norms": []}
+report = []
+for law in LAWS:
+    norms = parse(law)
+    for k, x in enumerate(norms):
+        x["id"] = f"{law['id']}:{x['ref']}"
+        x["order"] = k
+        corpus["norms"].append(x)
+    corpus["laws"].append({k: law[k] for k in ("id", "name", "stand", "url", "unit")})
+
+    nums = [x["num"] for x in norms if x["kind"] == "norm" and x["num"] is not None]
+    missing = []
+    if nums and law["style"] not in ("kunst",):
+        have = set(nums)
+        missing = [v for v in range(1, max(nums) + 1) if v not in have]
+    erw = [x["num"] for x in norms if x["kind"] == "erwg"]
+    if erw:
+        report.append(f"  {law['id']} Erwägungsgründe: {len(erw)} (1–{max(erw)}), lückenlos: {erw == list(range(1, max(erw)+1))}")
+    big = sorted(norms, key=lambda x: -len(x["text"]))[:3]
+    report.append(
+        f"{law['id']}: {len(norms)} Abschnitte ({len([x for x in norms if x['kind']=='anlage'])} Anlagen), "
+        f"{sum(len(x['text']) for x in norms)} Zeichen, Nummern {min(nums) if nums else '-'}–{max(nums) if nums else '-'}, "
+        f"fehlend: {missing[:30]}, größte: {[(b['ref'], len(b['text'])) for b in big]}"
+    )
+
+with open(OUT, "w", encoding="utf-8") as f:
+    json.dump(corpus, f, ensure_ascii=False, separators=(",", ":"))
+print("\n".join(report))
